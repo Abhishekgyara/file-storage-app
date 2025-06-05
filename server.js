@@ -32,9 +32,9 @@ const File = mongoose.model('File', fileSchema);
 // Configure multer for file upload
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const uploadDir = 'uploads';
+    const uploadDir = '/tmp/uploads';  // Use /tmp for Vercel
     if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
+      fs.mkdirSync(uploadDir, { recursive: true });
     }
     cb(null, uploadDir);
   },
@@ -171,14 +171,19 @@ function connectWithRetry() {
 connectWithRetry();
 
 // Start server on all network interfaces
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Server is running on http://localhost:${port}`);
-  console.log('\nTo use the app:');
-  console.log('1. Open http://localhost:3000 in your browser');
-  console.log('2. The app will work offline after first load');
-  console.log('3. All files are stored in MongoDB Atlas');
-  console.log(`4. Other devices can access the app at http://${getLocalIP()}:${port}`);
-});
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`Server is running on http://localhost:${port}`);
+    console.log('\nTo use the app:');
+    console.log('1. Open http://localhost:3000 in your browser');
+    console.log('2. The app will work offline after first load');
+    console.log('3. All files are stored in MongoDB Atlas');
+    console.log(`4. Other devices can access the app at http://${getLocalIP()}:${port}`);
+  });
+}
+
+// Export the Express API
+module.exports = app;
 
 // Function to get local IP address
 function getLocalIP() {
