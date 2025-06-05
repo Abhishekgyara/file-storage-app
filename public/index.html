@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Storage App</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0d6efd">
+    <style>
+        .file-card {
+            transition: transform 0.2s;
+        }
+        .file-card:hover {
+            transform: translateY(-5px);
+        }
+        .preview-image {
+            max-width: 100%;
+            height: 200px;
+            object-fit: cover;
+        }
+        .preview-pdf {
+            width: 100%;
+            height: 200px;
+            border: 1px solid #ddd;
+        }
+        #offlineMessage {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background-color: #dc3545;
+            color: white;
+            text-align: center;
+            padding: 10px;
+            z-index: 1000;
+        }
+        #installButton {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body class="bg-light">
+    <div id="offlineMessage">You are currently offline. Some features may be limited.</div>
+    <button id="installButton" class="btn btn-primary">Install App</button>
+
+    <div class="container py-5">
+        <h1 class="text-center mb-5">File Storage App</h1>
+        
+        <!-- Upload Form -->
+        <div class="card mb-5">
+            <div class="card-body">
+                <h5 class="card-title">Upload Files</h5>
+                <form id="uploadForm" class="mt-3">
+                    <div class="mb-3">
+                        <input type="file" class="form-control" id="fileInput" accept="image/*,.pdf" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Files Display -->
+        <h3 class="mb-4">Uploaded Files</h3>
+        <div id="filesList" class="row g-4"></div>
+    </div>
+
+    <script>
+        // Register Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js')
+                    .then(registration => {
+                        console.log('ServiceWorker registration successful');
+                    })
+                    .catch(err => {
+                        console.log('ServiceWorker registration failed: ', err);
+                    });
+            });
+        }
+
+        // Handle offline/online status
+        window.addEventListener('online', updateOnlineStatus);
+        window.addEventListener('offline', updateOnlineStatus);
+
+        function updateOnlineStatus() {
+            const offlineMessage = document.getElementById('offlineMessage');
+            offlineMessage.style.display = navigator.onLine ? 'none' : 'block';
+        }
+
+        // Handle PWA installation
+        let deferredPrompt;
+        const installButton = document.getElementById('installButton');
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            installButton.style.display = 'block';
+        });
+
+        installButton.addEventListener('click', async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                console.log(`User response to the install prompt: ${outcome}`);
+                deferredPrompt = null;
+                installButton.style.display = 'none';
+            }
+        });
+
+        const uploadForm = document.getElementById('uploadForm');
+        const fileInput = document.getElementById('fileInput');
+        const filesList = document.getElementById('filesList');
+
+        // Load files on page load
+        loadFiles();
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    if (data.file.isOffline) {
+                        alert('File will be uploaded when you are back online');
+                    } else {
+                        alert('File uploaded successfully!');
+                    }
+                    fileInput.value = '';
+                    loadFiles();
+                } else {
+                    alert('Error uploading file: ' + data.error);
+                }
+            } catch (error) {
+                if (!navigator.onLine) {
+                    alert('You are offline. The file will be uploaded when you are back online.');
+                    // Store the upload request for later
+                    if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                        const registration = await navigator.serviceWorker.ready;
+                        await registration.sync.register('sync-files');
+                    }
+                } else {
+                    alert('Error uploading file: ' + error.message);
+                }
+            }
+        });
+
+        async function loadFiles() {
+            try {
+                const response = await fetch('/files');
+                const files = await response.json();
+                displayFiles(files);
+                
+                // Cache the files list
+                if ('caches' in window) {
+                    const cache = await caches.open('file-storage-v1');
+                    await cache.put('/files', new Response(JSON.stringify(files)));
+                }
+            } catch (error) {
+                console.error('Error loading files:', error);
+                // Try to load from cache if offline
+                if ('caches' in window) {
+                    try {
+                        const cache = await caches.open('file-storage-v1');
+                        const cachedResponse = await cache.match('/files');
+                        if (cachedResponse) {
+                            const files = await cachedResponse.json();
+                            displayFiles(files);
+                        }
+                    } catch (cacheError) {
+                        console.error('Error loading from cache:', cacheError);
+                    }
+                }
+            }
+        }
+
+        function displayFiles(files) {
+            filesList.innerHTML = '';
+            files.forEach(file => {
+                const isImage = file.mimeType.startsWith('image/');
+                const isPDF = file.mimeType === 'application/pdf';
+                
+                const fileCard = document.createElement('div');
+                fileCard.className = 'col-md-4';
+                fileCard.innerHTML = `
+                    <div class="card file-card h-100">
+                        <div class="card-body">
+                            ${isImage ? 
+                                `<img src="${file.url}" class="preview-image mb-3" alt="${file.originalName}" loading="lazy" onerror="this.onerror=null; this.src='/offline-placeholder.png';">` :
+                                isPDF ? 
+                                `<iframe src="${file.url}" class="preview-pdf mb-3" onerror="this.onerror=null; this.src='/offline-placeholder.pdf';"></iframe>` :
+                                `<div class="text-center mb-3">
+                                    <i class="fas fa-file fa-3x"></i>
+                                </div>`
+                            }
+                            <h5 class="card-title">${file.originalName}</h5>
+                            <p class="card-text">
+                                <small class="text-muted">
+                                    Size: ${formatFileSize(file.size)}<br>
+                                    Uploaded: ${new Date(file.uploadDate).toLocaleString()}
+                                </small>
+                            </p>
+                            <div class="btn-group" role="group">
+                                <a href="${file.url}" class="btn btn-primary" target="_blank" download="${file.originalName}">Download</a>
+                                <button class="btn btn-secondary" onclick="precacheFile('${file.url}')">Save for Offline</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                filesList.appendChild(fileCard);
+            });
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Function to precache a file for offline use
+        async function precacheFile(url) {
+            try {
+                const response = await fetch(url);
+                if (response.ok) {
+                    const cache = await caches.open('file-storage-v1');
+                    await cache.put(url, response);
+                    alert('File saved for offline use');
+                } else {
+                    alert('Error saving file for offline use');
+                }
+            } catch (error) {
+                console.error('Error precaching file:', error);
+                alert('Error saving file for offline use');
+            }
+        }
+
+        // Handle online/offline status
+        window.addEventListener('online', () => {
+            document.getElementById('offlineMessage').style.display = 'none';
+            loadFiles(); // Reload files when back online
+        });
+
+        window.addEventListener('offline', () => {
+            document.getElementById('offlineMessage').style.display = 'block';
+        });
+
+        // Check initial online status
+        if (!navigator.onLine) {
+            document.getElementById('offlineMessage').style.display = 'block';
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html> 
